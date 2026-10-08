@@ -8,11 +8,18 @@ pkg_installed() {
     dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'
 }
 
-count_missing() {
+pkg_available() {
+    apt-cache show "$1" &>/dev/null
+}
+
+count_missing_installable() {
     local count=0
     local pkg
     for pkg in "$@"; do
-        if ! pkg_installed "$pkg"; then
+        if pkg_installed "$pkg"; then
+            continue
+        fi
+        if pkg_available "$pkg"; then
             ((count++)) || true
         fi
     done
@@ -25,16 +32,39 @@ install_apt_group() {
     local missing=()
     local pkg
     for pkg in "$@"; do
-        if ! pkg_installed "$pkg"; then
-            missing+=("$pkg")
+        if pkg_installed "$pkg"; then
+            continue
         fi
+        if ! pkg_available "$pkg"; then
+            echo "$label: package '$pkg' is not in your apt sources; skipping."
+            continue
+        fi
+        missing+=("$pkg")
     done
     if [ ${#missing[@]} -eq 0 ]; then
-        echo "$label: already installed, skipping."
+        echo "$label: already installed or nothing to install from apt, skipping."
         return 0
     fi
     echo "$label: installing ${#missing[@]} missing package(s)..."
     sudo apt install -y "${missing[@]}"
+}
+
+install_pkexec() {
+    if command -v pkexec >/dev/null 2>&1 || pkg_installed pkexec; then
+        echo "Polkit (pkexec): already available, skipping."
+        return 0
+    fi
+    if pkg_available pkexec; then
+        echo "Polkit (pkexec): installing pkexec..."
+        sudo apt install -y pkexec
+        return 0
+    fi
+    if pkg_available policykit-1; then
+        echo "Polkit (pkexec): installing policykit-1 (legacy metapackage)..."
+        sudo apt install -y policykit-1
+        return 0
+    fi
+    echo "Warning: pkexec not found in apt (pkexec / policykit-1). GUI tools that need root may fail."
 }
 
 BASE_PKGS=(
@@ -47,8 +77,12 @@ BUILD_PKGS=(
 )
 GUI_PKGS=(
     gparted zenmap grsync wireshark zenity
-    gsmartcontrol hardinfo gnome-disk-utility rpi-imager
-    xfce4-terminal policykit-1
+    gsmartcontrol hardinfo gnome-disk-utility
+    xfce4-terminal
+)
+# Not in all Debian/Refugio apt sources (e.g. minimal live images).
+OPTIONAL_GUI_PKGS=(
+    rpi-imager
 )
 WOEUSB_APT_PKGS=(
     parted dosfstools ntfs-3g wimtools
@@ -57,22 +91,29 @@ RESCUE_PKGS=(
     clonezilla testdisk gddrescue zfsutils-linux
     tcpdump nmap rsync smartmontools lvm2 cryptsetup mtr iperf3 arp-scan chntpw
 )
-ALL_PKGS=("${BASE_PKGS[@]}" "${BUILD_PKGS[@]}" "${GUI_PKGS[@]}" "${WOEUSB_APT_PKGS[@]}" "${RESCUE_PKGS[@]}")
+ALL_PKGS=("${BASE_PKGS[@]}" "${BUILD_PKGS[@]}" "${GUI_PKGS[@]}" "${OPTIONAL_GUI_PKGS[@]}" "${WOEUSB_APT_PKGS[@]}" "${RESCUE_PKGS[@]}")
 
-missing_count=$(count_missing "${ALL_PKGS[@]}")
+missing_count=$(count_missing_installable "${ALL_PKGS[@]}")
 if [ "$missing_count" -gt 0 ]; then
-    echo "$missing_count package(s) not installed; updating lists and fixing broken dependencies..."
+    echo "$missing_count installable package(s) missing; updating lists and fixing broken dependencies..."
     sudo apt update
     sudo apt --fix-broken install -y
 else
-    echo "All APT packages already installed; skipping apt update."
+    echo "All installable APT packages already present; skipping apt update."
 fi
 
 install_apt_group "Core system tools" "${BASE_PKGS[@]}"
 install_apt_group "Build tools and Python dependencies" "${BUILD_PKGS[@]}"
 install_apt_group "Graphical and system utilities" "${GUI_PKGS[@]}"
+install_apt_group "Optional graphical tools" "${OPTIONAL_GUI_PKGS[@]}"
+install_pkexec
 install_apt_group "WoeUSB / filesystem helpers" "${WOEUSB_APT_PKGS[@]}"
 install_apt_group "Terminal and rescue utilities" "${RESCUE_PKGS[@]}"
+
+if ! command -v rpi-imager >/dev/null 2>&1; then
+    echo ""
+    echo "Pi Imager: not installed (package unavailable or skipped). Use 'Disks' in the Rescue Menu to flash ISO/IMG images."
+fi
 
 echo "Installing WoeUSB-ng for Windows USBs..."
 if python3 -m pip show WoeUSB-ng &>/dev/null; then

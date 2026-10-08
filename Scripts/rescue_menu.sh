@@ -48,7 +48,7 @@ run_pkexec() {
     local hint="$2"
     local use_local_path="${3:-0}"
     local exe
-    require_command pkexec "policykit-1"
+    require_command pkexec "pkexec"
     exe=$(resolve_command "$cmd" "$hint")
     if [ "$use_local_path" = "1" ]; then
         pkexec env PATH="$PKEXEC_PATH" "$exe" \
@@ -159,7 +159,18 @@ case "$CHOICE" in
     "GParted") run_pkexec gparted gparted ;;
     "Disks") run_gui gnome-disks gnome-disk-utility ;;
     "WoeUSB") run_pkexec woeusbgui "WoeUSB-ng (pip)" 1 ;;
-    "Pi Imager") run_gui rpi-imager rpi-imager ;;
+    "Pi Imager")
+        if ! command -v rpi-imager >/dev/null 2>&1; then
+            if zenity --question --width=460 \
+                --title="Pi Imager not installed" \
+                --text="rpi-imager is not on this system (often missing from Refugio apt).\n\nOpen GNOME Disks to flash ISO/IMG instead?" \
+                2>/dev/null; then
+                run_gui gnome-disks gnome-disk-utility
+            fi
+        else
+            run_gui rpi-imager rpi-imager
+        fi
+        ;;
     "GSmartControl") run_pkexec gsmartcontrol gsmartcontrol ;;
     "HardInfo") run_gui hardinfo hardinfo ;;
     "Zenmap") run_pkexec zenmap zenmap ;;
