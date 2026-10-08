@@ -37,6 +37,9 @@ install_apt_group() {
     sudo apt install -y "${missing[@]}"
 }
 
+BASE_PKGS=(
+    sudo iproute2
+)
 BUILD_PKGS=(
     build-essential pkg-config libgtk-3-dev python3-dev
     python3-pip python3-setuptools python3-wheel python3-wxgtk4.0
@@ -54,7 +57,7 @@ RESCUE_PKGS=(
     clonezilla testdisk gddrescue zfsutils-linux
     tcpdump nmap rsync smartmontools lvm2 cryptsetup mtr iperf3 arp-scan chntpw
 )
-ALL_PKGS=("${BUILD_PKGS[@]}" "${GUI_PKGS[@]}" "${WOEUSB_APT_PKGS[@]}" "${RESCUE_PKGS[@]}")
+ALL_PKGS=("${BASE_PKGS[@]}" "${BUILD_PKGS[@]}" "${GUI_PKGS[@]}" "${WOEUSB_APT_PKGS[@]}" "${RESCUE_PKGS[@]}")
 
 missing_count=$(count_missing "${ALL_PKGS[@]}")
 if [ "$missing_count" -gt 0 ]; then
@@ -65,6 +68,7 @@ else
     echo "All APT packages already installed; skipping apt update."
 fi
 
+install_apt_group "Core system tools" "${BASE_PKGS[@]}"
 install_apt_group "Build tools and Python dependencies" "${BUILD_PKGS[@]}"
 install_apt_group "Graphical and system utilities" "${GUI_PKGS[@]}"
 install_apt_group "WoeUSB / filesystem helpers" "${WOEUSB_APT_PKGS[@]}"
@@ -76,6 +80,9 @@ if python3 -m pip show WoeUSB-ng &>/dev/null; then
 else
     # The || prevents 'set -e' from halting if PEP-668 blocks the first attempt.
     sudo pip3 install WoeUSB-ng || sudo pip3 install WoeUSB-ng --break-system-packages
+fi
+if WOEUSB_BIN=$(command -v woeusbgui 2>/dev/null); then
+    sudo ln -sf "$WOEUSB_BIN" /usr/local/bin/woeusbgui
 fi
 
 MENU_SCRIPT="$HOME/rescue_tools/Scripts/rescue_menu.sh"
@@ -108,5 +115,12 @@ EOF
 fi
 
 chmod +x "$DESKTOP_FILE"
+
+if pkg_installed wireshark && ! id -nG "${USER:-}" 2>/dev/null | grep -qw wireshark; then
+    echo ""
+    echo "Wireshark: to capture without root, add your user to the wireshark group:"
+    echo "  sudo usermod -aG wireshark $USER"
+    echo "  (log out and back in afterward — or use the prompt in Rescue Menu when launching Wireshark)"
+fi
 
 echo "Installation complete! The Rescue Menu icon is now on your desktop."

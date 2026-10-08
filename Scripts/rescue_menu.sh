@@ -9,6 +9,8 @@ if [ -z "${DISPLAY:-}" ]; then
 fi
 
 TERMINAL="${RESCUE_TERMINAL:-xfce4-terminal}"
+# pkexec uses a restricted PATH; pip installs WoeUSB here.
+PKEXEC_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 show_error() {
     zenity --error --width=420 --text="$1" 2>/dev/null || echo "Error: $1" >&2
@@ -18,9 +20,20 @@ require_command() {
     local cmd="$1"
     local hint="$2"
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        show_error "Cannot find <b>$cmd</b>.\n\nRun <i>install_rescue_tools.sh</i> or install: <b>$hint</b>."
+        show_error "Cannot find '$cmd'.\n\nRun install_rescue_tools.sh or install package: $hint"
         exit 1
     fi
+}
+
+resolve_command() {
+    local cmd="$1"
+    local hint="$2"
+    local exe
+    exe=$(command -v "$cmd" 2>/dev/null) || {
+        show_error "Cannot find '$cmd'.\n\nRun install_rescue_tools.sh or install package: $hint"
+        exit 1
+    }
+    printf '%s' "$exe"
 }
 
 run_gui() {
@@ -33,9 +46,34 @@ run_gui() {
 run_pkexec() {
     local cmd="$1"
     local hint="$2"
+    local use_local_path="${3:-0}"
+    local exe
     require_command pkexec "policykit-1"
-    require_command "$cmd" "$hint"
-    pkexec "$cmd" || show_error "Could not start <b>$cmd</b>.\n(Polkit prompt cancelled or access denied.)"
+    exe=$(resolve_command "$cmd" "$hint")
+    if [ "$use_local_path" = "1" ]; then
+        pkexec env PATH="$PKEXEC_PATH" "$exe" \
+            || show_error "Could not start $cmd.\n(Polkit prompt cancelled, access denied, or command not in pkexec PATH.)"
+    else
+        pkexec "$exe" \
+            || show_error "Could not start $cmd.\n(Polkit prompt cancelled or access denied.)"
+    fi
+}
+
+run_wireshark() {
+    require_command wireshark "wireshark"
+    if ! id -nG "${USER:-}" 2>/dev/null | grep -qw wireshark; then
+        if zenity --question --width=440 \
+            --title="Wireshark permissions" \
+            --text="Capture may fail unless your user is in the 'wireshark' group.\n\nAdd $USER to that group now? (log out and back in afterward)" \
+            2>/dev/null; then
+            pkexec usermod -aG wireshark "${USER:?}" \
+                && zenity --info --width=400 \
+                    --text="Added to group 'wireshark'. Log out and back in, then start Wireshark again." \
+                    2>/dev/null
+            return 0
+        fi
+    fi
+    wireshark &
 }
 
 hold_shell() {
@@ -61,6 +99,30 @@ valid_host() {
     [[ "$target" =~ ^[A-Za-z0-9._:/-]+$ ]]
 }
 
+pick_interface() {
+    local dialog_title="$1"
+    local ifaces=()
+    local name
+
+    require_command ip iproute2
+
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        [ "$name" = "lo" ] && continue
+        ifaces+=("$name")
+    done < <(ip -o link show 2>/dev/null | awk -F': ' '{print $2}')
+
+    if [ ${#ifaces[@]} -eq 0 ]; then
+        show_error "No usable network interfaces found."
+        exit 1
+    fi
+
+    zenity --list --title="$dialog_title" --text="Choose a network interface:" \
+        --column="Interface" --width=360 --height=320 "${ifaces[@]}" 2>/dev/null
+}
+
+require_command zenity zenity
+
 CHOICE=$(zenity --list \
     --title="Admin & Rescue Toolkit" \
     --text="Pick a tool to launch. Use the list search box to filter." \
@@ -76,6 +138,7 @@ CHOICE=$(zenity --list \
     "Storage" "TestDisk" "Partition table and boot sector recovery" \
     "Storage" "PhotoRec" "Recover deleted files and lost data" \
     "Storage" "Gddrescue" "Rescue data from failing drives (ddrescue)" \
+    "Storage" "7-Zip" "List or extract archives from the terminal" \
     "Network" "Zenmap" "Graphical Nmap network scanner" \
     "Network" "Wireshark" "Capture and analyze network traffic" \
     "Network" "Grsync" "Graphical rsync backup and sync" \
@@ -95,18 +158,28 @@ fi
 case "$CHOICE" in
     "GParted") run_pkexec gparted gparted ;;
     "Disks") run_gui gnome-disks gnome-disk-utility ;;
-    "WoeUSB") run_pkexec woeusbgui "WoeUSB-ng (pip)" ;;
+    "WoeUSB") run_pkexec woeusbgui "WoeUSB-ng (pip)" 1 ;;
     "Pi Imager") run_gui rpi-imager rpi-imager ;;
     "GSmartControl") run_pkexec gsmartcontrol gsmartcontrol ;;
     "HardInfo") run_gui hardinfo hardinfo ;;
     "Zenmap") run_pkexec zenmap zenmap ;;
     "Grsync") run_gui grsync grsync ;;
-    "Wireshark") run_gui wireshark wireshark ;;
+    "Wireshark") run_wireshark ;;
 
     "Clonezilla") hold_sudo "Clonezilla" clonezilla ;;
     "TestDisk") hold_sudo "TestDisk" testdisk ;;
     "PhotoRec") hold_sudo "PhotoRec" photorec ;;
-    "Gddrescue") hold_sudo "Gddrescue" ddrescue ;;
+    "Gddrescue")
+        hold_shell "Gddrescue" \
+            "echo 'Example: sudo ddrescue -n /dev/sdX image.img mapfile'; echo 'List devices: lsblk'; echo; exec bash -l"
+        ;;
+
+    "7-Zip")
+        require_command 7z p7zip-full
+        ARCHIVE=$(zenity --file-selection --title="7-Zip — select an archive" 2>/dev/null) || exit 0
+        if [ -z "$ARCHIVE" ]; then exit 0; fi
+        hold_shell "7-Zip" "7z l $(printf '%q' "$ARCHIVE"); echo; echo 'Extract: 7z x archive -o/outdir'; exec bash -l"
+        ;;
 
     "MTR")
         TARGET=$(ask_target "MTR" "Host or IP to trace:")
@@ -139,17 +212,13 @@ case "$CHOICE" in
         ;;
 
     "Tcpdump")
-        IFACE=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | zenity --list \
-            --title="Tcpdump" --text="Choose a network interface:" \
-            --column="Interface" --width=360 --height=320 2>/dev/null) || exit 0
+        IFACE=$(pick_interface "Tcpdump") || exit 0
         if [ -z "$IFACE" ]; then exit 0; fi
         hold_shell "Tcpdump — $IFACE" "sudo tcpdump -i $(printf '%q' "$IFACE") -n"
         ;;
 
     "ARP Scan")
-        IFACE=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | zenity --list \
-            --title="ARP Scan" --text="Choose a network interface:" \
-            --column="Interface" --width=360 --height=320 2>/dev/null) || exit 0
+        IFACE=$(pick_interface "ARP Scan") || exit 0
         if [ -z "$IFACE" ]; then exit 0; fi
         hold_sudo "ARP Scan — $IFACE" "arp-scan --interface=$(printf '%q' "$IFACE") --localnet"
         ;;
