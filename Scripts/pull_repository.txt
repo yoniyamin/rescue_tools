@@ -1,0 +1,10 @@
+Open the terminal and download your repository:
+# 1. Pull the toolkit
+git clone https://github.com/yoniyamin/rescue_tools.git
+
+# 2. Go to the Scripts folder
+cd rescue_tools/Scripts
+
+# 3. Make the installer executable and run it
+chmod +x install_rescue_tools.sh rescue_menu.sh
+./install_rescue_tools.sh
